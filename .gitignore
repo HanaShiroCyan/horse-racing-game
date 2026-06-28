@@ -7,4 +7,4 @@ dist/
 .env.production.local
 .DS_Store
 Thumbs.db
-*.log
+*.logscreenshot_*.png

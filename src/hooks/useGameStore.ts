@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { GameState, Player, GameConfig, MoveResult, Character, PlayerSkillState, SkillEffect } from '@/types';
 import { getRunningStyleConfig, PLAYER_COLORS } from '@/config/runningStyles';
 import { CHARACTERS, getRandomCharacter } from '@/config/characters';
-import { rollDice, executeMove, calculateMileage, isGameFinished, MoveDirection } from '@/utils/gameLogic';
+import { rollDice, executeMove, calculateMileage, calculateMove, isGameFinished, MoveDirection } from '@/utils/gameLogic';
 
 interface GameStore extends GameState {
   initGame: (config: GameConfig, selectedCharacter: Character, initialPosition: number) => void;
@@ -33,6 +33,12 @@ interface GameStore extends GameState {
 
   useActiveSkill: (playerId: string) => void;
 
+  activateBurningBlood: (playerId: string) => void;
+
+  applyTyrantSkill: (playerId: string) => void;
+
+  executeExtraMove: (direction: MoveDirection) => number;
+
   triggerRoundStartSkills: () => void;
 }
 
@@ -45,6 +51,7 @@ const createSkillState = (character: Character): PlayerSkillState => {
     cooldown: character.skill.cooldown || 0,
     isActive: false,
     extraData: {
+      divineBonusChains: [],
       consecutiveBonusRounds: 0,
       burningBloodFailures: 0,
       outsideZoneCount: 0,
@@ -168,6 +175,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const direction = state.moveDirection || 'right';
     const moveResult = executeMove(currentPlayer, state.diceValue, direction, state.currentRound, state.players);
 
+    const effects = [];
+    let detailParts = [];
+
     const updatedPlayers = state.players.map(p => {
       if (p.id === state.currentPlayerId) {
         const newPlayer = {
@@ -206,6 +216,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set({
       players: updatedPlayers,
       isDiceRolling: false,
+      diceValue: null,
+      moveDirection: null,
       skillEffects: [...state.skillEffects, ...moveResult.skillEffects],
     });
   },
@@ -223,20 +235,24 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const nextPlayerId = state.turnOrder[nextTurnIndex];
 
     const updatedPlayers = state.players.map(p => {
-      const newSkillState = { ...p.skillState };
+      // 只对当前结束回合的玩家进行CD减1和技能状态更新
+      if (p.id === state.currentPlayerId) {
+        const newSkillState = { ...p.skillState };
 
-      if (newSkillState.cooldown > 0) {
-        newSkillState.cooldown--;
-      }
-
-      if (p.character.id === 'agnes_tachyon') {
-        const wasInZone = p.history.length > 0 && p.history[p.history.length - 1].wasInZone;
-        if (!wasInZone) {
-          newSkillState.extraData.outsideZoneCount = (newSkillState.extraData.outsideZoneCount || 0) + 1;
+        if (newSkillState.cooldown > 0) {
+          newSkillState.cooldown--;
         }
-      }
 
-      return { ...p, skillState: newSkillState };
+        if (p.character.id === 'agnes_tachyon') {
+          const wasInZone = p.history.length > 0 && p.history[p.history.length - 1].wasInZone;
+          if (!wasInZone) {
+            newSkillState.extraData.outsideZoneCount = (newSkillState.extraData.outsideZoneCount || 0) + 1;
+          }
+        }
+
+        return { ...p, skillState: newSkillState };
+      }
+      return p;
     });
 
     set({
@@ -260,16 +276,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
         currentRound: newRound,
       });
     } else {
-      const updatedPlayers = state.players.map(p => {
-        const newSkillState = { ...p.skillState };
-
-        if (newSkillState.cooldown > 0) {
-          newSkillState.cooldown--;
-        }
-
-        return { ...p, skillState: newSkillState };
-      });
-
       // 出手顺序只在游戏开始时确定一次，之后不再改变
       set({
         currentRound: newRound,
@@ -278,7 +284,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         diceValue: null,
         moveDirection: null,
         showResult: false,
-        players: updatedPlayers,
+        players: state.players,
         skillEffects: [],
       });
     }
@@ -358,6 +364,125 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
 
     set({ players: updatedPlayers });
+  },
+
+  executeExtraMove: (direction: MoveDirection) => {
+    const state = get();
+    if (!state.currentPlayerId) return 0;
+
+    let newMileageGain = 0;
+
+    const updatedPlayers = state.players.map(p => {
+      if (p.id === state.currentPlayerId) {
+        const { newPosition } = calculateMove(p.position, 1, direction);
+        const styleConfig = getRunningStyleConfig(p.runningStyle);
+        const isInBonusZone = styleConfig.zonePositions.includes(newPosition);
+
+        // 重新计算新位置的里程
+        const tempPlayer = {
+          ...p,
+          position: newPosition,
+          skillState: { ...p.skillState, extraData: { ...p.skillState.extraData } },
+        };
+        const { mileage: recalcGain } = calculateMileage(tempPlayer, state.currentRound, state.players);
+        newMileageGain = recalcGain;
+
+        // 获取旧里程用于调整总分
+        const oldGain = p.history.length > 0 ? p.history[p.history.length - 1].mileageGain : 0;
+
+        const newPlayer = {
+          ...p,
+          position: newPosition,
+          mileage: p.mileage - oldGain + recalcGain,
+        };
+
+        // 更新历史记录
+        if (newPlayer.history.length > 0) {
+          const history = [...newPlayer.history];
+          history[history.length - 1] = {
+            ...history[history.length - 1],
+            endPosition: newPosition,
+            wasInZone: isInBonusZone,
+            mileageGain: recalcGain,
+          };
+          newPlayer.history = history;
+        }
+
+        return newPlayer;
+      }
+      return p;
+    });
+
+    set({ players: updatedPlayers });
+    return newMileageGain;
+  },
+
+  applyTyrantSkill: (playerId: string) => {
+    const state = get();
+    const player = state.players.find(p => p.id === playerId);
+    if (!player || player.character.id !== 'golden_age') return;
+    if (player.skillState.usesRemaining <= 0) return;
+
+    const effects = [];
+    let detailParts = [];
+
+    const updatedPlayers = state.players.map(p => {
+      if (p.id === playerId) {
+        return {
+          ...p,
+          skillState: {
+            ...p.skillState,
+            usesRemaining: p.skillState.usesRemaining - 1,
+            isActive: true,
+          },
+        };
+      }
+      let deducted = 20;
+      if (Math.random() < 0.75) {
+        deducted += 15;
+        detailParts.push(p.character.name + '✅+15');
+      } else {
+        detailParts.push(p.character.name + '❌');
+      }
+      return {
+        ...p,
+        mileage: Math.max(0, p.mileage - deducted),
+      };
+    });
+
+    effects.push({
+      playerId: playerId,
+      playerName: player.name,
+      skillName: player.character.skill.name,
+      effect: '暴君！全体-20 (' + detailParts.join(', ') + ')',
+      type: 'debuff',
+    });
+
+    set({
+      players: updatedPlayers,
+      skillEffects: [...state.skillEffects, ...effects],
+    });
+  },
+
+  activateBurningBlood: (playerId: string) => {
+    const state = get();
+    const player = state.players.find(p => p.id === playerId);
+    if (!player || player.character.id !== "vodka") return;
+    if (player.skillState.isActive) return;
+    const updatedPlayers = state.players.map(p => {
+      if (p.id === playerId) {
+        return { ...p, skillState: { ...p.skillState, isActive: true, usesRemaining: 1 } };
+      }
+      return p;
+    });
+    const bEffects: SkillEffect[] = [{
+      playerId: playerId,
+      playerName: player.name,
+      skillName: player.character.skill.name,
+      effect: "燃血开启！此后每回合+35，需持续判定",
+      type: "buff",
+    }];
+    set({ players: updatedPlayers, skillEffects: [...state.skillEffects, ...bEffects] });
   },
 
   triggerRoundStartSkills: () => {

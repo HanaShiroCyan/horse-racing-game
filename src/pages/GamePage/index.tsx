@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useGameStore } from '@/hooks/useGameStore';
 import { TRACK_CONFIG, getRunningStyleConfig } from '@/config/runningStyles';
-import { Dice1, Dice2, Dice3, RotateCcw, ChevronRight, ChevronLeft } from 'lucide-react';
+import { Dice1, Dice2, Dice3, RotateCcw, ChevronRight, ChevronLeft, Zap } from 'lucide-react';
 import { Player } from '@/types';
 import { MoveDirection, calculateMove, calculateMileage } from '@/utils/gameLogic';
 import { getAIOptimalDirection, calculateMileageGain } from '@/utils/aiStrategy';
@@ -32,12 +32,18 @@ const GamePage = () => {
     nextRound,
     resetGame,
     clearSkillEffects,
+    addSkillEffect,
+    useActiveSkill,
+    applyTyrantSkill,
+    activateBurningBlood,
+    executeExtraMove,
   } = useGameStore();
 
   const [animationComplete, setAnimationComplete] = useState(false);
   const [movingPlayer, setMovingPlayer] = useState<string | null>(null);
   const [lastMileageGain, setLastMileageGain] = useState<number>(0);
   const [showSkillEffects, setShowSkillEffects] = useState(false);
+  const [showExtraMove, setShowExtraMove] = useState(false);
   const [showStartAnimation, setShowStartAnimation] = useState(true);
 
   const currentPlayer = players.find(p => p.id === currentPlayerId);
@@ -72,7 +78,7 @@ const GamePage = () => {
 
   useEffect(() => {
     if (phase === 'playing' && currentPlayer && currentPlayer.isAI && diceValue && !isDiceRolling && !moveDirection && !showResult) {
-      const optimalDirection = getAIOptimalDirection(currentPlayer, diceValue);
+      const optimalDirection = getAIOptimalDirection(currentPlayer, diceValue, players, currentRound);
       setMoveDirection(optimalDirection);
     }
   }, [phase, currentPlayer, diceValue, isDiceRolling, moveDirection, showResult]);
@@ -81,8 +87,12 @@ const GamePage = () => {
     if (!isDiceRolling && diceValue && moveDirection && !showResult && !animationComplete) {
       const timer = setTimeout(() => {
         setMovingPlayer(currentPlayerId);
-        setLastMileageGain(calculateMileageGain(currentPlayer!, diceValue, moveDirection));
         executePlayerMove();
+        // 从结算后的store读取实际获得里程（含随机判定技能如无声铃鹿）
+        const st = useGameStore.getState();
+        const p = st.players.find(pl => pl.id === currentPlayerId);
+        const lastH = p?.history[p.history.length - 1];
+        setLastMileageGain(lastH?.mileageGain ?? 0);
         setTimeout(() => {
           setMovingPlayer(null);
           setAnimationComplete(true);
@@ -114,17 +124,73 @@ const GamePage = () => {
 
     const isLastPlayer = currentTurnIndex === turnOrder.length - 1;
 
+    // 先处理当前回合玩家的回合结束逻辑（CD递减、能量扣除等）
+    nextPlayer();
+
     if (isLastPlayer) {
       nextRound();
       if (phase === 'finished') {
         navigate('/result');
       }
-    } else {
-      nextPlayer();
     }
 
     setAnimationComplete(false);
     setLastMileageGain(0);
+    setShowExtraMove(false);
+  };
+
+  const handleUseSkill = () => {
+    if (!currentPlayerId || !currentPlayer) return;
+    useActiveSkill(currentPlayerId);
+    addSkillEffect({
+      playerId: currentPlayerId,
+      playerName: currentPlayer.name,
+      skillName: currentPlayer.character.skill.name,
+      effect: '使用技能，可选择额外移动一格！',
+      type: 'buff',
+    });
+    setShowSkillEffects(true);
+    setTimeout(() => setShowSkillEffects(false), 2000);
+    setShowExtraMove(true);
+  };
+
+  const handleExtraMove = (direction: MoveDirection) => {
+    if (!currentPlayerId) return;
+    const newGain = executeExtraMove(direction);
+    setLastMileageGain(newGain);
+    setMovingPlayer(currentPlayerId);
+    setTimeout(() => setMovingPlayer(null), 400);
+    setShowExtraMove(false);
+  };
+
+  const handleUseTyrant = () => {
+    if (!currentPlayerId || !currentPlayer) return;
+    applyTyrantSkill(currentPlayerId);
+    setShowSkillEffects(true);
+    setTimeout(() => setShowSkillEffects(false), 2000);
+  };
+
+  const showSkillButton = currentPlayer && !currentPlayer.isAI
+    && currentPlayer.character.skill.isActive
+    && currentPlayer.character.skill.triggerType === 'move'
+    && currentPlayer.skillState.usesRemaining > 0;
+
+  const isSkillReady = showSkillButton && currentPlayer.skillState.cooldown === 0;
+
+  const showTyrantButton = currentPlayer && !currentPlayer.isAI
+    && currentPlayer.character.id === 'golden_age'
+    && currentPlayer.skillState.usesRemaining > 0;
+
+  const showBurningBloodButton = currentPlayer && !currentPlayer.isAI
+    && currentPlayer.character.id === 'vodka'
+    && !currentPlayer.skillState.isActive
+    && currentPlayer.skillState.usesRemaining === 0;
+
+  const handleActivateBurningBlood = () => {
+    if (!currentPlayerId) return;
+    activateBurningBlood(currentPlayerId);
+    setShowSkillEffects(true);
+    setTimeout(() => setShowSkillEffects(false), 2000);
   };
 
   const getDiceIcon = () => {
@@ -427,6 +493,29 @@ const GamePage = () => {
                   <div className="text-white text-center">
                     <div className="text-xs font-bold">{player.character.name}</div>
                     <div className="text-xs text-amber-300">{player.mileage} 里程</div>
+                    {player.character.id === 'agnes_tachyon' && (
+                      <div className="flex gap-1 mt-1.5 justify-center">
+                        <div className="text-[9px] text-amber-400/70 mr-0.5">🦵</div>
+                        {[0, 1, 2].map(i => {
+                          const oc = player.skillState.extraData.outsideZoneCount || 0;
+                          // 结算阶段(showResult=true)且本回合不在区时，显示扣除后预估值与技能提示同步
+                          const lastWasInZone = player.history.length > 0 && player.history[player.history.length - 1].wasInZone;
+                          const effectiveOC = (showResult && player.id === currentPlayerId && !lastWasInZone && player.history.length > 0) ? oc + 1 : oc;
+                          const lit = effectiveOC < i + 1;
+                          const isDebuff = effectiveOC >= 3;
+                          return (
+                            <div
+                              key={i}
+                              className={`w-2.5 h-3.5 rounded-sm transition-all duration-300 ${
+                                lit
+                                  ? isDebuff ? 'bg-red-400 shadow-[0_0_5px_rgba(248,113,113,0.5)]' : 'bg-green-400 shadow-[0_0_5px_rgba(74,222,128,0.5)]'
+                                  : 'bg-gray-600'
+                              }`}
+                            />
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   {player.id === currentPlayerId && (
@@ -500,18 +589,44 @@ const GamePage = () => {
       <div className="relative z-10 px-4 md:px-8 mt-8 flex flex-col items-center">
         <AnimatePresence mode="wait">
           {!currentPlayer?.isAI && !diceValue && !isDiceRolling && !showResult && (
-            <motion.button
-              key="roll"
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              onClick={rollDiceForCurrentPlayer}
-              className="relative px-8 py-4 bg-gradient-to-r from-red-500 via-orange-500 to-yellow-500 text-white rounded-full font-black text-xl shadow-[0_8px_30px_rgba(251,191,36,0.5)] border-4 border-yellow-300 flex items-center gap-3"
-            >
-              <span className="text-2xl">🎲</span>
-              投掷骰子
-              <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full animate-shine" />
-            </motion.button>
+            <div className="flex flex-col items-center gap-3">
+              {showBurningBloodButton && (
+                <motion.button
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={handleActivateBurningBlood}
+                  className="px-6 py-3 bg-gradient-to-r from-red-600 to-rose-600 text-white rounded-xl font-bold shadow-lg border-2 border-red-400 flex items-center gap-2"
+                >
+                  <span className="text-xl">🔥</span>
+                  <span>燃血开启</span>
+                  <span className="text-xs text-red-200">(每回合+35，结束时60%持续)</span>
+                </motion.button>
+              )}
+              {currentPlayer?.skillState.isActive && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="px-4 py-2 bg-red-900/50 text-red-300 rounded-xl border border-red-500/50 text-sm font-bold flex items-center gap-2"
+                >
+                  <span className="animate-pulse">🔥</span>
+                  燃血已激活
+                </motion.div>
+              )}
+              <motion.button
+                key="roll"
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                onClick={rollDiceForCurrentPlayer}
+                className="relative px-8 py-4 bg-gradient-to-r from-red-500 via-orange-500 to-yellow-500 text-white rounded-full font-black text-xl shadow-[0_8px_30px_rgba(251,191,36,0.5)] border-4 border-yellow-300 flex items-center gap-3"
+              >
+                <span className="text-2xl">🎲</span>
+                投掷骰子
+                <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full animate-shine" />
+              </motion.button>
+            </div>
           )}
 
           {diceValue && !isDiceRolling && !showResult && (
@@ -551,7 +666,7 @@ const GamePage = () => {
                       向左移动
                     </span>
                     <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-xs bg-black/80 text-white px-2 py-1 rounded">
-                      +{calculateMileageGain(currentPlayer!, diceValue, 'left')} 里程
+                      +{calculateMileageGain(currentPlayer!, diceValue, 'left', players, currentRound)} 里程
                     </div>
                   </motion.button>
 
@@ -566,7 +681,7 @@ const GamePage = () => {
                       <ChevronRight className="w-6 h-6" />
                     </span>
                     <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-xs bg-black/80 text-white px-2 py-1 rounded">
-                      +{calculateMileageGain(currentPlayer!, diceValue, 'right')} 里程
+                      +{calculateMileageGain(currentPlayer!, diceValue, 'right', players, currentRound)} 里程
                     </div>
                   </motion.button>
                 </div>
@@ -625,6 +740,80 @@ const GamePage = () => {
                 继续
                 <ChevronRight className="w-5 h-5" />
               </motion.button>
+
+              {!showExtraMove && showSkillButton && (
+                <motion.button
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.8 }}
+                  whileHover={isSkillReady ? { scale: 1.05 } : {}}
+                  whileTap={isSkillReady ? { scale: 0.95 } : {}}
+                  onClick={isSkillReady ? handleUseSkill : undefined}
+                  className={`px-6 py-2 rounded-xl font-bold shadow-lg border-2 flex items-center gap-2 transition-all ${
+                    isSkillReady
+                      ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white border-purple-400 cursor-pointer'
+                      : 'bg-gray-700/50 text-gray-400 border-gray-600 cursor-not-allowed'
+                  }`}
+                >
+                  <Zap className={`w-5 h-5 ${isSkillReady ? 'text-yellow-300' : 'text-gray-500'}`} />
+                  <span>{currentPlayer?.character.skill.name}</span>
+                  <span className="text-xs ml-1">
+                    ({isSkillReady
+                      ? `剩余${currentPlayer?.skillState.usesRemaining}次`
+                      : `CD:${currentPlayer?.skillState.cooldown}回合 · 剩余${currentPlayer?.skillState.usesRemaining}次`})
+                  </span>
+                </motion.button>
+              )}
+
+              {showExtraMove && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="flex flex-col items-center gap-2"
+                >
+                  <p className="text-amber-200 text-sm font-bold">
+                    ⚡ 选择额外移动方向
+                  </p>
+                  <div className="flex gap-3">
+                    <motion.button
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => handleExtraMove('left')}
+                      className="px-5 py-2 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-xl font-bold shadow-lg border-2 border-blue-400 flex items-center gap-2"
+                    >
+                      <ChevronLeft className="w-5 h-5" />
+                      左移一格
+                    </motion.button>
+                    <motion.button
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => handleExtraMove('right')}
+                      className="px-5 py-2 bg-gradient-to-r from-green-600 to-green-700 text-white rounded-xl font-bold shadow-lg border-2 border-green-400 flex items-center gap-2"
+                    >
+                      右移一格
+                      <ChevronRight className="w-5 h-5" />
+                    </motion.button>
+                  </div>
+                </motion.div>
+              )}
+
+              {!showExtraMove && showTyrantButton && (
+                <motion.button
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.7 }}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={handleUseTyrant}
+                  className="px-6 py-2 bg-gradient-to-r from-red-700 to-rose-700 text-white rounded-xl font-bold shadow-lg border-2 border-red-400 flex items-center gap-2"
+                >
+                  <span className="text-lg">👑</span>
+                  <span>暴君</span>
+                  <span className="text-xs text-red-200 ml-1">
+                    (剩余{currentPlayer?.skillState.usesRemaining}次)
+                  </span>
+                </motion.button>
+              )}
             </motion.div>
           )}
         </AnimatePresence>

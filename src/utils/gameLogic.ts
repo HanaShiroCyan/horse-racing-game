@@ -35,7 +35,7 @@ export const calculateMove = (
   };
 };
 
-export const calculateMileage = (player: Player, currentRound: number, players: Player[]): { mileage: number; effects: SkillEffect[] } => {
+export const calculateMileage = (player: Player, currentRound: number, players: Player[], isPreview: boolean = false, diceValue?: number): { mileage: number; effects: SkillEffect[] } => {
   const runningStyleConfig = getRunningStyleConfig(player.runningStyle);
   const isInZone = runningStyleConfig.zonePositions.includes(player.position);
 
@@ -60,20 +60,20 @@ export const calculateMileage = (player: Player, currentRound: number, players: 
     }
   }
 
-  if (player.character.id === 'pegasus_song') {
-    if (currentRound % 3 === 0 && Math.random() < 0.35) {
-      baseMileage += 30;
+  if (player.character.id === 'silence_suzuka') {
+    if (currentRound % 3 === 0 && !isPreview && Math.random() < 0.75) {
+      baseMileage += 35;
       effects.push({
         playerId: player.id,
         playerName: player.name,
         skillName: player.character.skill.name,
-        effect: '完美脚步！额外+30里程',
+        effect: '天马之歌触发！额外+35里程',
         type: 'buff',
       });
     }
   }
 
-  if (player.character.id === 'touch_world') {
+  if (player.character.id === 'eagle') {
     if (player.history.length > 0) {
       const lastHistory = player.history[player.history.length - 1];
       if (lastHistory.wasInZone) {
@@ -100,7 +100,7 @@ export const calculateMileage = (player: Player, currentRound: number, players: 
     }
   }
 
-  if (player.character.id === 'ultimate_dance') {
+  if (player.character.id === 'tokai_teio') {
     if (currentRound >= 3 && player.history.length >= 2) {
       const lastTwoHistory = player.history.slice(-2);
       const sum = lastTwoHistory[0].diceValue + lastTwoHistory[1].diceValue;
@@ -118,60 +118,62 @@ export const calculateMileage = (player: Player, currentRound: number, players: 
     }
   }
 
-  if (player.character.id === 'divine_presence') {
+  if (player.character.id === 'oguri_cap') {
+    const chains = player.skillState.extraData.divineBonusChains || [];
+
+    // 检测是否从非对应区域回到对应区域 → 触发新链 [30, 20, 10]
     if (player.history.length > 0) {
       const lastHistory = player.history[player.history.length - 1];
-      const lastRoundNum = player.history.length > 1 ? player.history[player.history.length - 2].roundNumber : 0;
-      
       if (!lastHistory.wasInZone && isInZone) {
-        const bonusThisRound = 30;
-        const bonusNextRound = 20;
-        const bonusAfterNext = 10;
-        
-        baseMileage += bonusThisRound;
-        player.skillState.extraData.consecutiveBonusRounds = 2;
-        
+        chains.push([30, 20, 10]);
         effects.push({
           playerId: player.id,
           playerName: player.name,
           skillName: player.character.skill.name,
-          effect: `神临！本回合+${bonusThisRound}，下回合+${bonusNextRound}，再下回合+${bonusAfterNext}`,
+          effect: '神临触发！回到对应区域，本回合+30（可叠加）',
           type: 'buff',
         });
-      } else if (player.skillState.extraData.consecutiveBonusRounds > 0) {
-        if (player.skillState.extraData.consecutiveBonusRounds === 2) {
-          baseMileage += 20;
-          effects.push({
-            playerId: player.id,
-            playerName: player.name,
-            skillName: player.character.skill.name,
-            effect: '神临效果延续！额外+20里程',
-            type: 'buff',
-          });
-        } else {
-          baseMileage += 10;
-          effects.push({
-            playerId: player.id,
-            playerName: player.name,
-            skillName: player.character.skill.name,
-            effect: '神临效果最后回合！额外+10里程',
-            type: 'buff',
-          });
-        }
-        player.skillState.extraData.consecutiveBonusRounds--;
       }
     }
+
+    // 汇总所有活跃链的当前回合加成
+    let totalDivineBonus = 0;
+    for (let i = chains.length - 1; i >= 0; i--) {
+      const chain = chains[i];
+      if (chain.length > 0) {
+        totalDivineBonus += chain[0];
+        chain.shift(); // 消耗本回合加成
+      }
+      if (chain.length === 0) {
+        chains.splice(i, 1); // 空链移除
+      }
+    }
+
+    if (totalDivineBonus > 0) {
+      baseMileage += totalDivineBonus;
+      effects.push({
+        playerId: player.id,
+        playerName: player.name,
+        skillName: player.character.skill.name,
+        effect: `神临！额外+${totalDivineBonus}里程`,
+        type: 'buff',
+      });
+    }
+
+    player.skillState.extraData.divineBonusChains = chains;
   }
 
-  if (player.character.id === 'glass_leg') {
+  if (player.character.id === 'agnes_tachyon') {
     const outsideCount = player.skillState.extraData.outsideZoneCount || 0;
-    if (outsideCount <= 3) {
+    if (isInZone || outsideCount <= 1) {
       baseMileage += 20;
       effects.push({
         playerId: player.id,
         playerName: player.name,
         skillName: player.character.skill.name,
-        effect: '玻璃腿BUFF！额外+20里程',
+        effect: isInZone
+          ? '在对应区域，玻璃腿BUFF！额外+20里程'
+          : `玻璃腿BUFF！额外+20里程（剩余能量${Math.max(0, 2 - outsideCount)}格）`,
         type: 'buff',
       });
     } else {
@@ -180,13 +182,13 @@ export const calculateMileage = (player: Player, currentRound: number, players: 
         playerId: player.id,
         playerName: player.name,
         skillName: player.character.skill.name,
-        effect: '玻璃腿DEBUFF！额外-10里程',
+        effect: '能量耗尽！玻璃腿DEBUFF！额外-10里程',
         type: 'debuff',
       });
     }
   }
 
-  if (player.character.id === 'hero') {
+  if (player.character.id === 'great_impact') {
     if (currentRound >= 2) {
       const hasOtherInZone = players.some(p => 
         p.id !== player.id && 
@@ -207,19 +209,35 @@ export const calculateMileage = (player: Player, currentRound: number, players: 
   }
 
   if (player.character.id === 'gold_ship') {
-    const allOthersInZone = players.every(p => 
-      p.id !== player.id && 
-      p.history.length > 0 && 
-      p.history[p.history.length - 1].wasInZone
-    );
-    
+    console.group('🐎 黄金船技能判定');
+    console.log('对手们的位置:');
+    players.forEach(p => {
+      if (p.id === player.id) {
+        console.log(`  [黄金船本人] ${p.character.name} 位置=${p.position} 跑法=${p.runningStyle}`);
+      } else {
+        const cfg = getRunningStyleConfig(p.runningStyle);
+        const inZone = cfg.zonePositions.includes(p.position);
+        console.log(`  ${p.character.name} 位置=${p.position} 跑法=${p.runningStyle} 对应区域=[${cfg.zonePositions}] ${inZone ? '✅在区域内' : '❌不在区域'}`);
+      }
+    });
+
+    const allOthersInZone = players.every(p => {
+      if (p.id === player.id) return true;
+      const styleConfig = getRunningStyleConfig(p.runningStyle);
+      return styleConfig.zonePositions.includes(p.position);
+    });
+
+    console.log(`判定结果: ${allOthersInZone ? '✅ 全部对手在区域 → +120' : '❌ 有对手不在区域 → -20'}`);
+    console.log(`基础分: ${isInZone ? runningStyleConfig.bonusMileage : 100}`);
+    console.groupEnd();
+
     if (allOthersInZone) {
       baseMileage += 120;
       effects.push({
         playerId: player.id,
         playerName: player.name,
         skillName: player.character.skill.name,
-        effect: '原来我在比赛啊！所有对手在区域内，额外+120里程',
+        effect: '原来我在比赛啊！所有对手在对应区域，额外+120里程',
         type: 'buff',
       });
     } else {
@@ -228,15 +246,14 @@ export const calculateMileage = (player: Player, currentRound: number, players: 
         playerId: player.id,
         playerName: player.name,
         skillName: player.character.skill.name,
-        effect: '原来我在比赛啊！对手不在区域内，额外-20里程',
+        effect: '原来我在比赛啊！有对手不在对应区域，额外-20里程',
         type: 'debuff',
       });
     }
   }
 
-  if (player.character.id === 'coward') {
-    const lastHistory = player.history[player.history.length - 1];
-    if (lastHistory && lastHistory.diceValue === 4) {
+  if (player.character.id === 'narita_taishin') {
+    if (diceValue === 4) {
       baseMileage += 30;
       effects.push({
         playerId: player.id,
@@ -248,23 +265,24 @@ export const calculateMileage = (player: Player, currentRound: number, players: 
     }
   }
 
-  if (player.character.id === 'burning_blood') {
+  if (player.character.id === 'vodka') {
     if (player.skillState.isActive) {
       baseMileage += 35;
       effects.push({
         playerId: player.id,
         playerName: player.name,
         skillName: player.character.skill.name,
-        effect: '燃血！额外+35里程',
+        effect: '燃血激活！额外+35里程',
         type: 'buff',
       });
 
-      if (Math.random() >= 0.6) {
+      // 预览时跳过随机判定（不剧透），实际游戏才判定
+      if (!isPreview && player.skillState.isActive && Math.random() >= 0.6) {
         const outsideTurns = player.history.filter(h => !h.wasInZone).length;
         const penalty = outsideTurns * 10;
         baseMileage -= penalty;
         player.skillState.isActive = false;
-        
+
         effects.push({
           playerId: player.id,
           playerName: player.name,
@@ -284,7 +302,7 @@ export const executeMove = (player: Player, diceValue: number, direction: MoveDi
   const { newPosition, path } = calculateMove(startPosition, diceValue, direction);
 
   const updatedPlayer = { ...player, position: newPosition };
-  const { mileage, effects } = calculateMileage(updatedPlayer, currentRound, allPlayers);
+  const { mileage, effects } = calculateMileage(updatedPlayer, currentRound, allPlayers, false, diceValue);
   
   const runningStyleConfig = getRunningStyleConfig(player.runningStyle);
   const isInBonusZone = runningStyleConfig.zonePositions.includes(newPosition);
@@ -313,8 +331,15 @@ export const getRanking = (players: Player[]): Player[] => {
   return [...players].sort((a, b) => b.mileage - a.mileage);
 };
 
-export const calculateMileageGain = (player: Player, diceValue: number, direction: MoveDirection): number => {
+export const calculateMileageGain = (player: Player, diceValue: number, direction: MoveDirection, allPlayers: Player[] = [], currentRound: number = 1): number => {
   const move = calculateMove(player.position, diceValue, direction);
-  const tempPlayer = { ...player, position: move.newPosition };
-  return calculateMileage(tempPlayer, 1, []).mileage;
+  const tempPlayer = {
+    ...player,
+    position: move.newPosition,
+    skillState: {
+      ...player.skillState,
+      extraData: JSON.parse(JSON.stringify(player.skillState.extraData)),
+    },
+  };
+  return calculateMileage(tempPlayer, currentRound, allPlayers, true, diceValue).mileage;
 };

@@ -8,10 +8,10 @@ export const CHARACTERS: Character[] = [
     skill: {
       id: 'reinforced_body',
       name: '钢筋铁骨',
-      description: '技能CD3回合，一局最多使用2次。移动后可选择向左或向右额外移动一格。',
+      description: '技能CD2回合，一局最多使用4次。移动后可选择向左或向右额外移动一格。',
       isActive: true,
-      maxUses: 2,
-      cooldown: 3,
+      maxUses: 4,
+      cooldown: 2,
       triggerType: 'move',
     },
     avatar: '🖤',
@@ -38,7 +38,7 @@ export const CHARACTERS: Character[] = [
     skill: {
       id: 'pegasus_song',
       name: '天马之歌',
-      description: '3的倍数回合时，35%概率触发完美脚步，结算时额外+30里程。',
+      description: '3的倍数回合时，75%概率触发天马之歌，结算时额外+35里程。',
       isActive: false,
       triggerType: 'settle',
     },
@@ -94,7 +94,7 @@ export const CHARACTERS: Character[] = [
     skill: {
       id: 'glass_leg',
       name: '玻璃腿',
-      description: '自带每回合+20里程buff。若不在对应区域的回合累计超过3次，变为每回合-10debuff。',
+      description: '自带3条能量条，每不在对应区域一次损耗1条。3条全损后变为每回合-10 debuff。',
       isActive: false,
       triggerType: 'passive',
     },
@@ -122,7 +122,7 @@ export const CHARACTERS: Character[] = [
     skill: {
       id: 'tyrant',
       name: '暴君',
-      description: '每局可使用2次。回合开始时选择使用，75%概率成功使每个对手里程-20。',
+      description: '每局可使用2次。移动后使用，所有对手里程-20，且每个对手有75%概率额外-15。',
       isActive: true,
       maxUses: 2,
       triggerType: 'round_start',
